@@ -1,61 +1,160 @@
-# Demo Devices Template
+# Dantherm / Pluggit for Gladys
 
-This is the user documentation of the integration. Gladys re-hosts this file
-and shows a permanent **Documentation** link to it in the Configuration screen
-(in the user's language, with English as the fallback) — it is when
-configuring that the user needs it most. Keep the short onboarding hints in
-the `section` blocks of the manifest `config_schema`; put the long
-step-by-step (screenshots, troubleshooting…) here.
+Shows a **Dantherm** (HCV, RCV, HCH) or **Pluggit** (AP, iFlow) heat
+recovery ventilation unit in Gladys, through its **Modbus TCP** interface on
+your local network, without any cloud or account. Unofficial integration,
+**not affiliated with Dantherm or Pluggit**. **Never tested with a real
+device**: it reads and writes the registers of the manufacturer's Modbus
+table (the Pluggit controller, shared by both brands) as the open-source
+Dantherm integration of Home Assistant uses them; please report what you
+see.
+
+## Before you start
+
+- The unit must be on your network (Ethernet) and reachable from Gladys on
+  **port 502** (Modbus TCP). Give it a fixed IP address in your router.
+  Recommended firmware: 2.70 or 3.08 and later (those the Home Assistant
+  integration asks for).
+- Modbus TCP has **no password**: keep the unit on a trusted network.
+- The Modbus unit id (slave address) is 1 unless you changed it.
+- The controller accepts three connections at once. The integration opens
+  only one, and closes it after each read.
+
+## Installation
+
+1. Install the integration from the Gladys store.
+2. Enter the **IP address of the unit** (port 502 unless you add one) and,
+   if needed, the Modbus unit id; save.
+3. Open the **Discovery** tab and add the unit.
 
 ## What you get
 
-Six demo devices show up after installation: a weather station (real data
-from Open-Meteo), a switch, a dimmable light, a smart plug with power
-metering, a motion sensor and a camera.
+One device, **Dantherm / Pluggit ventilation**, with:
 
-## Configuration
+| Feature                           | Notes                                                                                                |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Ventilation mode                  | list: automatic (demand), week program, manual level 1 to 4                                          |
+| Current mode                      | text (stable English key): `standby`, `manual`, `demand`, `week-program`, `away`, `summer`, `night`… |
+| Fan level                         | 0 to 4 (0: stopped)                                                                                  |
+| Alarm                             | text: `none`, `exhaust-fan`, `supply-fan`, `bypass`, `fire`, `fire-thermostat`…                      |
+| Alarm active                      | 1 = an alarm is active                                                                               |
+| Bypass damper                     | text: `closed`, `in-progress`, `opening`, `closing`, `opened`                                        |
+| Temperatures T1 to T4             | outdoor, supply, extract, exhaust; °C                                                                |
+| Room temperature T5               | only when the unit lists the sensor (HRC2 component)                                                 |
+| Humidity                          | %; only with a sensor (0 is never published)                                                         |
+| Air quality (VOC, CO2 equivalent) | ppm; only with a VOC sensor (0 is never published)                                                   |
+| Filter: days left                 | days                                                                                                 |
+| Stop the ventilation              | button                                                                                               |
+| Reset the filter timer            | button                                                                                               |
 
-1. Open the **Configuration** tab of the integration.
-2. Set the **latitude** and **longitude** the demo weather station should
-   observe (they default to Paris), and pick your temperature unit.
-   The **refresh interval** sets how often the weather station and the
-   plug's power are read: every 5 minutes by default, every minute at most.
-3. Save: the devices appear in the **Discovery** tab, ready to be added.
+Texts are never published as a measure: an unknown or out-of-range value is
+not published (Gladys keeps the previous one).
 
-The **Prefer the local connection** toggle drives the demo plug: it reports
-the channel it actually uses as a badge (local or cloud), with an orange dot
-when it runs degraded (local refused, cloud fallback).
+The unit is read every 60 s (30 s to 1 h), in ten requests on one
+connection, closed after. The test button, a Discovery scan, a reconnection
+of Gladys or a restart of the integration never read it sooner than the
+interval. Reads outside the interval:
 
-## Actions
+- each command reads the unit right before writing, then reads back what it
+  wrote;
+- the stop and its resends;
+- 5 s then 20 s after a command not confirmed and after each stop;
+- a new address or unit id saved is read at once.
 
-- **Test the weather provider** — performs a live request to Open-Meteo and
-  shows the current temperature and humidity under the button.
-- **Identify a device** — pick one of your devices in the list and it will
-  signal itself (the demo light "blinks" in the logs).
+## Stopping the ventilation
 
-## Scenes
+The **Stop the ventilation** button sets the unit to manual mode, level 0
+(what the Home Assistant integration calls stand-by). If the unit is in
+away, summer or fireplace mode, that mode is ended first.
 
-The integration adds its own cards to the scene editor (Gladys 5.1 or
-later), under the **Integrations** category:
+It depends on **no option**, nor on another command running, nor on a read
+running (it cuts it), nor on the wait after an error, nor on the serial
+number, nor on the state file in /data, nor on the configuration sent by
+Gladys (the last unit configured is kept in /data). It cancels a mode
+command not sent yet; an older write already sent that would apply after it
+is caught by its resends (below). A
+refused or closed connection, a missing or wrong answer are tried again
+every 250 ms until 3.5 s after the press. It is confirmed when the unit
+reads back level 0 in manual mode or stand-by.
 
-- **Motion detected** (trigger) — starts the scene when a demo motion sensor
-  sees something move. Optionally pick the sensor and what moved (person,
-  animal); left empty, any detection matches. The following actions can
-  read what moved with `{{triggerEvent.data.target}}`.
-- **Identify a device** (action) — makes the chosen device signal itself.
-  It returns whether the device could signal itself, so the following
-  actions can depend on it.
+It can still answer without having stopped the ventilation in these cases:
 
-## Dashboard
+- no valid address, neither in the configuration nor in /data;
+- a value other than 1;
+- unit unreachable until 3.5 s after the press ("not sent", or "not sent
+  yet" while it still tries);
+- a missing or wrong answer, a Modbus exception, or a level read back other
+  than 0 ("sent, without confirmation"); a unit in night mode, an override
+  or a fail-safe may keep its own level.
 
-Add the **Demo status** widget to a dashboard: it shows the live
-temperature of the weather station and the power of the office plug, the
-connection the plug currently uses (orange when degraded) and the observed
-location. Its **Identify the light** button makes the demo light signal
-itself.
+A second press during the first joins it. The stop is kept in /data:
 
-## Troubleshooting
+- **not confirmed**, it is sent again at the next start of the integration
+  (before any read and even if Gladys does not answer) and by the reads that
+  show the unit running, three times at most;
+- **confirmed**, it is sent again by the reads of the next two minutes that
+  show the unit running (an older write may still land), three times at
+  most.
 
-The integration logs everything it does: check the integration logs from the
-Gladys UI (or `docker logs` on the host) with `LOG_LEVEL=debug` for the full
-detail.
+This guard is **never lifted by the time**. It is lifted only:
+
+- by a mode chosen from Gladys with the option on (right before its write);
+- by two reads in a row showing the unit running when no resend is due:
+  the unit was restarted outside Gladys (panel, app); the status says so. An
+  unknown read between the two starts the count again.
+
+## Optional commands
+
+The **mode** is refused unless **Allow the mode commands** is on, and the
+**filter reset** unless **Allow the filter reset** is on (both off by
+default). No switch: a "turn everything off" of a voice assistant never
+reaches the ventilation.
+
+- Each command reads the unit right before writing (serial number, current
+  mode, level and alarm; or the filter days left), writes nothing when the
+  mode is already the one asked (unless a stop is guarded: it is then
+  written, which lifts the guard), and is confirmed only when the unit answers
+  each write and then reads back what was asked (for the filter: more days
+  left than before; as many as before is not a confirmation). A command that
+  may have reached the unit without being confirmed answers "sent, without
+  confirmation": check the unit a few seconds later. A first write refused
+  with Modbus exception 1, 2 or 3 answers "refused" and is not applied; other
+  exceptions answer "sent, without confirmation". A command whose first
+  write cannot leave within 3.5 s is refused and nothing is sent.
+- A mode chosen may **restart a stopped unit**: that is why it depends on
+  the option. It is refused while a stop is running.
+- The mode is refused when the unit is in a mode Gladys does not set: away,
+  summer, fireplace, night, external input or hygrostat override, installer,
+  fail-safe, fail off, defrost. Change that mode on the unit or in its app.
+- The mode is refused in **fire alarm** (alarm `fire` or `fire-thermostat`).
+- **Serial number**: the integration keeps a salted fingerprint of the
+  unit's serial number (never the number itself). If another number is read
+  (unit replaced, or another device at the same address), its values are
+  not shown, the status says so and the optional commands are refused until
+  a press on **Test the connection**, which accepts the unit. An unreadable
+  number is not "another unit". The stop does not depend on it.
+- If the state file in /data cannot be read, it is never written over and
+  the optional commands are refused (not the stop). A command is also
+  refused when the fingerprint learnt could not be written to /data.
+
+## Status and errors
+
+The status of the integration shows the current mode, the level, an alarm,
+the unit type and firmware, an unreachable unit (with the next try: 30 s,
+1, 2 then 5 min, never less than the interval), a stop not confirmed, a
+restart outside Gladys, a configuration Gladys could not give (tried again
+at 5 s, doubled up to 5 min, without end; the reads go on with the
+configuration in use). A request refused by the unit (Modbus exception)
+leaves its values unknown; a measure always refused or silent is read again
+only once an hour.
+
+## Limits
+
+- Never tested with a real device.
+- The unit type is shown by its number (the Dantherm and Pluggit tables give
+  different names to the same number).
+- The manufacturer's table (2013) puts the unit type in the low byte of
+  `prmSystemID`; the Home Assistant integration, used on current firmwares,
+  reads it in the high byte: that reading is kept. The type is only shown.
+- Not yet: bypass, humidity and week program settings, alarm reset, fan
+  speeds, operating hours.

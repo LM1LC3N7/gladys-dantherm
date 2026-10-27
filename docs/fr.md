@@ -1,67 +1,176 @@
-# Template de démonstration
+# Dantherm / Pluggit pour Gladys
 
-Ceci est la documentation utilisateur de l'intégration. Gladys ré-héberge ce
-fichier et affiche un lien **Documentation** permanent vers lui dans l'écran
-de configuration (dans la langue de l'utilisateur, avec l'anglais en repli) —
-c'est au moment de configurer que l'utilisateur en a le plus besoin. Gardez
-les courtes indications d'accueil dans les blocs `section` du `config_schema`
-du manifest ; mettez ici le pas-à-pas détaillé (captures d'écran, dépannage…).
+Affiche une ventilation double flux **Dantherm** (HCV, RCV, HCH) ou
+**Pluggit** (AP, iFlow) dans Gladys, par son interface **Modbus TCP** sur
+votre réseau local, sans cloud ni compte. Intégration non officielle, **sans
+lien avec Dantherm ni Pluggit**. **Jamais testé avec un vrai appareil** :
+elle lit et écrit les registres de la table Modbus du fabricant (contrôleur
+Pluggit, commun aux deux marques) tels que les utilise l’intégration libre
+Dantherm de Home Assistant ; merci de signaler ce que vous constatez.
+
+## Avant de commencer
+
+- La centrale doit être sur votre réseau (Ethernet) et joignable depuis
+  Gladys sur le **port 502** (Modbus TCP). Donnez-lui une adresse IP fixe
+  dans votre routeur. Firmware conseillé : 2.70 ou 3.08 et suivants (ceux
+  que l’intégration de Home Assistant demande).
+- Le Modbus TCP n’a **pas de mot de passe** : gardez la centrale sur un
+  réseau de confiance.
+- L’identifiant d’unité Modbus (adresse esclave) vaut 1 sauf si vous l’avez
+  changé.
+- Le contrôleur accepte trois connexions à la fois. L’intégration n’en ouvre
+  qu’une, et la ferme après chaque lecture.
+
+## Installation
+
+1. Installez l’intégration depuis le store de Gladys.
+2. Saisissez l’**adresse IP de la centrale** (port 502 sauf si vous en
+   ajoutez un) et, si besoin, l’identifiant d’unité Modbus ; enregistrez.
+3. Ouvrez l’onglet **Découverte** et ajoutez la centrale.
 
 ## Ce que vous obtenez
 
-Six appareils de démonstration apparaissent après l'installation : une
-station météo (vraies données Open-Meteo), un interrupteur, une lampe
-variable, une prise connectée avec mesure de puissance, un détecteur de
-mouvement et une caméra.
+Un appareil, **Ventilation Dantherm / Pluggit**, avec :
 
-## Configuration
+| Fonctionnalité                          | Remarques                                                                                                 |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Mode de ventilation                     | liste : automatique (à la demande), programme hebdomadaire, manuel niveau 1 à 4                           |
+| Mode en cours                           | texte (clé stable en anglais) : `standby`, `manual`, `demand`, `week-program`, `away`, `summer`, `night`… |
+| Niveau de ventilation                   | 0 à 4 (0 : arrêtée)                                                                                       |
+| Alarme                                  | texte : `none`, `exhaust-fan`, `supply-fan`, `bypass`, `fire`, `fire-thermostat`…                         |
+| Alarme active                           | 1 = une alarme est active                                                                                 |
+| Volet de bypass                         | texte : `closed`, `in-progress`, `opening`, `closing`, `opened`                                           |
+| Températures T1 à T4                    | extérieur, soufflage, extraction, rejet ; °C                                                              |
+| Température ambiante T5                 | seulement si la centrale déclare la sonde (composant HRC2)                                                |
+| Humidité                                | % ; seulement avec une sonde (0 n’est jamais publié)                                                      |
+| Qualité de l’air (COV, équivalent CO2)  | ppm ; seulement avec une sonde COV (0 n’est jamais publié)                                                |
+| Filtres : jours restants                | jours                                                                                                     |
+| Arrêter la ventilation                  | bouton                                                                                                    |
+| Remettre à zéro le compteur des filtres | bouton                                                                                                    |
 
-1. Ouvrez l'onglet **Configuration** de l'intégration.
-2. Renseignez la **latitude** et la **longitude** que la station météo de
-   démonstration doit observer (Paris par défaut), et choisissez votre unité
-   de température. L'**intervalle de rafraîchissement** règle la fréquence
-   de lecture de la station météo et de la puissance de la prise : toutes
-   les 5 minutes par défaut, toutes les minutes au plus.
-3. Enregistrez : les appareils apparaissent dans l'onglet **Découverte**,
-   prêts à être ajoutés.
+Les textes ne sont jamais publiés comme une mesure : une valeur inconnue ou
+hors plage n’est pas publiée (Gladys garde la précédente).
 
-Le réglage **Préférer la connexion locale** pilote la prise de
-démonstration : elle affiche en badge le canal réellement utilisé (local ou
-cloud), avec un point orange quand elle fonctionne en mode dégradé (local
-refusé, bascule cloud).
+La centrale est lue toutes les 60 s (réglable de 30 s à 1 h), en dix
+requêtes sur une seule connexion, fermée ensuite. Le bouton de test, une
+recherche dans Découverte, une reconnexion de Gladys ou un redémarrage de
+l’intégration ne la relisent jamais avant l’intervalle. Lectures hors
+intervalle :
 
-## Actions
+- chaque commande relit la centrale juste avant d’écrire, puis relit ce
+  qu’elle a écrit ;
+- l’arrêt et ses renvois ;
+- 5 s puis 20 s après une commande non confirmée et après chaque arrêt ;
+- une nouvelle adresse ou un nouvel identifiant d’unité enregistré est lu
+  aussitôt.
 
-- **Tester le fournisseur météo** — effectue une requête en direct vers
-  Open-Meteo et affiche la température et l'humidité actuelles sous le
-  bouton.
-- **Identifier un appareil** — choisissez un de vos appareils dans la liste
-  et il se signale (la lampe de démonstration « clignote » dans les logs).
+## Arrêter la ventilation
 
-## Scènes
+Le bouton **Arrêter la ventilation** met la centrale en mode manuel au
+niveau 0 (ce que l’intégration de Home Assistant appelle la veille). Si la
+centrale est en mode absence, été ou cheminée, ce mode est d’abord terminé.
 
-L'intégration ajoute ses propres cartes à l'éditeur de scènes (Gladys 5.1
-ou plus récent), dans la catégorie **Intégrations** :
+Il n’est soumis à **aucune option**, ni à une autre commande en cours, ni à
+une lecture en cours (il la coupe), ni à l’attente après une erreur, ni au
+numéro de série, ni au fichier d’état de /data, ni à la configuration
+envoyée par Gladys (la dernière centrale configurée est gardée dans /data).
+Il annule une commande de mode pas encore envoyée ; une écriture plus
+ancienne déjà partie qui s’appliquerait après lui est rattrapée par ses
+renvois (ci-dessous). Une connexion refusée ou fermée, une réponse
+absente ou fausse sont réessayées toutes les 250 ms jusqu’à 3,5 s après
+l’appui. Il est confirmé quand la centrale relit le niveau 0 en mode manuel
+ou en veille.
 
-- **Mouvement détecté** (déclencheur) — lance la scène quand un détecteur
-  de démonstration voit bouger quelque chose. Choisissez éventuellement le
-  détecteur et ce qui a bougé (personne, animal) ; laissés vides, toute
-  détection correspond. Les actions suivantes peuvent lire ce qui a bougé
-  avec `{{triggerEvent.data.target}}`.
-- **Identifier un appareil** (action) — fait se signaler l'appareil choisi.
-  Elle indique si l'appareil a pu se signaler, pour que les actions
-  suivantes puissent en dépendre.
+Il peut toutefois répondre sans avoir arrêté la ventilation dans ces cas :
 
-## Tableau de bord
+- aucune adresse valide, ni dans la configuration, ni dans /data ;
+- valeur reçue autre que 1 ;
+- centrale injoignable jusqu’à 3,5 s après l’appui (« non envoyée », ou
+  « pas encore envoyé » s’il essaie encore) ;
+- réponse absente ou fausse, exception Modbus, ou niveau relu autre que 0
+  (« envoyée, sans confirmation ») ; une centrale en mode nuit, en forçage
+  ou en sécurité peut garder son propre niveau.
 
-Ajoutez le widget **État de la démo** à un tableau de bord : il affiche en
-direct la température de la station météo et la puissance de la prise du
-bureau, la connexion utilisée par la prise (en orange si dégradée) et la
-position observée. Son bouton **Identifier la lampe** fait se signaler la
-lampe de démonstration.
+Un deuxième appui pendant le premier le rejoint. L’arrêt est gardé dans
+/data :
 
-## Dépannage
+- **non confirmé**, il est renvoyé au démarrage suivant de l’intégration
+  (avant toute lecture et même si Gladys ne répond pas) et par les lectures
+  qui montrent la centrale en marche, trois fois au plus ;
+- **confirmé**, il est renvoyé par les lectures des deux minutes suivantes
+  qui montrent la centrale en marche (une écriture plus ancienne peut encore
+  arriver), trois fois au plus.
 
-L'intégration journalise tout ce qu'elle fait : consultez les logs de
-l'intégration depuis l'interface Gladys (ou `docker logs` sur l'hôte) avec
-`LOG_LEVEL=debug` pour le détail complet.
+Cette garde **ne se lève jamais avec le temps**. Elle se lève seulement :
+
+- par un mode choisi depuis Gladys avec l’option activée (juste avant son
+  écriture) ;
+- par deux lectures de suite qui montrent la centrale en marche alors
+  qu’aucun renvoi n’est dû : la centrale a été relancée hors de Gladys
+  (panneau, application) ; le statut le dit. Une lecture inconnue entre les
+  deux remet le compte à zéro.
+
+## Commandes en option
+
+Le **mode** est refusé tant que **Autoriser les commandes de mode** n’est
+pas activé, et la **remise à zéro des filtres** tant que **Autoriser la
+remise à zéro des filtres** ne l’est pas (les deux désactivés par défaut).
+Aucun interrupteur : un « éteins tout » d’un assistant vocal n’atteint
+jamais la ventilation.
+
+- Chaque commande relit la centrale juste avant d’écrire (numéro de série,
+  mode en cours, niveau et alarme ; ou jours restants des filtres), n’écrit
+  rien quand le mode est déjà le bon (sauf si un arrêt est gardé : il est
+  alors écrit, ce qui lève la garde), et n’est confirmée que si la centrale
+  répond à chaque écriture puis relit ce qui a été demandé (pour les
+  filtres : des jours restants plus nombreux qu’avant ; autant qu’avant
+  n’est pas une confirmation). Une commande qui a pu atteindre la centrale
+  sans être confirmée répond « envoyée, sans confirmation » : vérifiez la
+  centrale quelques secondes plus tard. Une première écriture refusée avec
+  une exception Modbus 1, 2 ou 3 répond « refusée » et n’est pas appliquée ;
+  les autres exceptions répondent « envoyée, sans confirmation ». Une
+  commande dont la première écriture ne peut pas partir dans les 3,5 s est
+  refusée et rien n’est envoyé.
+- Un mode choisi peut **relancer une centrale arrêtée** : c’est pour cela
+  qu’il dépend de l’option. Il est refusé pendant un arrêt en cours.
+- Le mode est refusé quand la centrale est dans un mode que Gladys ne règle
+  pas : absence, été, cheminée, nuit, forçage par entrée externe ou par
+  l’hygrostat, installateur, sécurité, arrêt sur défaut, dégivrage. Changez
+  ce mode sur la centrale ou dans son application.
+- Le mode est refusé en **alarme incendie** (alarme `fire` ou
+  `fire-thermostat`).
+- **Numéro de série** : l’intégration retient une empreinte salée du numéro
+  de série de la centrale (jamais le numéro lui-même). Si un autre numéro
+  est lu (centrale remplacée, ou autre appareil à la même adresse), ses
+  valeurs ne sont pas affichées, le statut l’indique et les commandes en
+  option sont refusées jusqu’à un appui sur **Tester la connexion**, qui
+  accepte la centrale. Un numéro illisible ne vaut pas « autre centrale ».
+  L’arrêt n’en dépend pas.
+- Si le fichier d’état de /data est illisible, il n’est jamais écrasé et
+  les commandes en option sont refusées (pas l’arrêt). Une commande est
+  aussi refusée si l’empreinte apprise n’a pas pu être écrite dans /data.
+
+## Statut et erreurs
+
+Le statut de l’intégration indique le mode en cours, le niveau, une alarme,
+le type de centrale et son firmware, une centrale injoignable (avec le
+prochain essai : 30 s, 1, 2 puis 5 min, jamais moins que l’intervalle), un
+arrêt non confirmé, une relance hors de Gladys, une configuration que
+Gladys n’a pas pu donner (nouvel essai à 5 s, doublé jusqu’à 5 min, sans
+fin ; les lectures continuent avec la configuration en cours). Une
+requête refusée par la centrale (exception Modbus) laisse ses valeurs
+inconnues ; une mesure toujours refusée ou muette n’est relue qu’une fois
+par heure.
+
+## Limites
+
+- Jamais testé avec un vrai appareil.
+- Le type de centrale est affiché par son numéro (les tables de Dantherm et
+  de Pluggit donnent des noms différents au même numéro).
+- La table du fabricant (2013) place le type de centrale dans l’octet de
+  poids faible de `prmSystemID` ; l’intégration de Home Assistant, utilisée
+  sur les firmwares actuels, le lit dans l’octet de poids fort : c’est
+  cette lecture qui est retenue. Le type ne sert qu’à l’affichage.
+- Pas encore : réglages du bypass, de l’humidité, du programme hebdomadaire,
+  remise à zéro des alarmes, vitesses des ventilateurs, heures de
+  fonctionnement.

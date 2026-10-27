@@ -110,6 +110,12 @@ export function fakeDantherm({ regs = defaultMap(), unitId = 1 } = {}) {
     /** The next connections accepted then closed at once. */
     dropConnections: 0,
     badEcho: false,
+    /** One-shot silences and exceptions ("fc:address"), writes acknowledged but never applied (by address). */
+    silentOnce: new Set(),
+    exceptionsOnce: new Set(),
+    ignoreAddresses: new Set(),
+    /** Called with each write received (address, value), before its answer. */
+    onWrite: undefined,
     /** Applies a write as the controller would (the current mode follows). */
     apply(address, value) {
       const r = unit.regs;
@@ -118,7 +124,7 @@ export function fakeDantherm({ regs = defaultMap(), unitId = 1 } = {}) {
         if (value === 0x0002) setU32(r, 472, 2);
         else if (value === 0x0008) setU32(r, 472, 3);
         else if (value === 0x0004) setU32(r, 472, getU32(r, 324) === 0 ? 0 : 1);
-        else if (value === 0x8010 || value === 0x8800 || value === 0x8040) setU32(r, 472, 1);
+        else if ([0x8010, 0x8800, 0x8040, 0x8020].includes(value)) setU32(r, 472, 1);
       } else if (address === 324) {
         setU32(r, 324, value);
         if ([0, 1].includes(getU32(r, 472))) setU32(r, 472, value === 0 ? 0 : 1);
@@ -140,7 +146,10 @@ export function fakeDantherm({ regs = defaultMap(), unitId = 1 } = {}) {
       const value = write ? pdu.readUInt16BE(6) + pdu.readUInt16BE(8) * 0x10000 : undefined;
       unit.log.push(write ? { fc, address, value } : { fc, address, count, uid });
       const key = `${fc}:${address}`;
+      if (write) unit.onWrite?.(address, value);
       if (unit.silent.has(key) || unit.silent.has(fc)) return;
+      if (unit.silentOnce.delete(key)) return;
+      const once = unit.exceptionsOnce.delete(key);
       const writeDelay =
         write && unit.writeDelays.length > 0 ? unit.writeDelays.shift() : undefined;
       setTimeout(
@@ -151,7 +160,7 @@ export function fakeDantherm({ regs = defaultMap(), unitId = 1 } = {}) {
             return;
           }
           let answer;
-          if (unit.exceptions.has(key) || unit.exceptions.has(fc)) {
+          if (once || unit.exceptions.has(key) || unit.exceptions.has(fc)) {
             answer = Buffer.from([fc | 0x80, unit.exceptionCode]);
           } else if (fc === 3) {
             answer = Buffer.alloc(2 + count * 2);
@@ -161,7 +170,8 @@ export function fakeDantherm({ regs = defaultMap(), unitId = 1 } = {}) {
               answer.writeUInt16BE(unit.regs.get(address + i) ?? 0, 2 + i * 2);
             }
           } else if (write) {
-            if (!unit.ignoreWrites) unit.apply(address, value);
+            if (!unit.ignoreWrites && !unit.ignoreAddresses.has(address))
+              unit.apply(address, value);
             answer = Buffer.from(pdu.subarray(0, 5));
             if (unit.badEcho) answer[4] ^= 1;
           } else {

@@ -34,15 +34,18 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (DanthermApp)
   serial). Every feature is always published; no switch, no writable binary
   or fan. The serial number is checked at each read and before each command
   (a salted fingerprint in `/data`).
-- **Stop the ventilation** (protective): manual mode then fan level 0 (away,
-  summer or fireplace ended first). Never behind an option, another command,
-  a read (it takes the line), a backoff, the serial, `/data` or the
-  configuration from Gladys (the last unit is kept in `/data`); retried every
-  250 ms until 3.5 s; kept in `/data`; a stop not confirmed is sent again at
-  the container start and by the reads showing the unit running, a confirmed
-  one by the reads of the next two minutes (three times at most). Never
-  lifted by the time: only by a mode written with the option, or two reads
-  in a row showing the unit running when no resend is due.
+- **Stop the ventilation** (protective): level 0, manual mode, level 0 again
+  (away, summer, fireplace or night ended first, after a read of the mode
+  that a failure never skips). Confirmed only by stand-by or manual level 0.
+  Never behind an option, another command, a read (it takes the line), a
+  backoff, the serial, `/data` or the configuration from Gladys (the last
+  unit is kept in `/data`); retried every 250 ms until 3.5 s (exceptions
+  4-6 included); kept in `/data`; a stop not confirmed is sent again at the
+  container start and by the reads showing the unit running (three times at
+  most, then the status says it did not take); a confirmed one by the first
+  read begun after its write only. Never lifted by the time: only by a mode
+  written with the option, or, after a confirmed stop, two reads in a row
+  showing the unit running.
 - **Mode** (`allow_commands`, off) and **filter reset**
   (`allow_filter_reset`, off): decided on a fresh read in their own session,
   refused in a mode Gladys does not set and in fire alarm, first write

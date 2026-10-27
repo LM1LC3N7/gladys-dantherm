@@ -22,6 +22,13 @@ up to date at the end of every milestone.
       behind their options (off), serial check, test button, docs en/fr,
       cover. Tested against a fake controller and a real local TCP server
       only.
+- [x] **Review r1 fixes** (2026-10-27): B1 stopped = stand-by or manual
+      level 0; B2 the stop's read of the mode never skipped by a failure (1 s);
+      I1 exceptions 4-6 retried; I2 night ended; I3 every alarm code shown,
+      12/14/16/unknown refuse the mode; I4 a confirmed stop checked by one read;
+      I5 status "did not take"; I6 tests for the 10 survivors; I7 level 0
+      first; M1 a stop for another unit waits; M2 guard put back on a refused
+      write. Tests named `r1 …` in `test/app.test.js`.
 - [ ] **Milestone 2 — real unit**: run against a real Dantherm or Pluggit
       unit (see "To check").
 - [ ] **Milestone 3 — more**: alarm reset (register 514, the alarm number,
@@ -34,10 +41,13 @@ up to date at the end of every milestone.
 
 - That the unit type is the top byte of `prmSystemID` (Home Assistant) and
   not the low byte (the 2013 table); only shown, never used to decide.
+- That level 0 written outside manual mode has no effect (or is refused),
+  and that 0x8020 ends the night mode without disabling the night schedule.
+- The alarm codes 12 to 16 (Home Assistant and the 2013 table differ).
 - That writing manual mode then level 0 stops the fans and that
   `prmCurrentBLState` then reads 0 (stand-by) or 1 (manual).
-- What the stop does in night mode (16), an override or a fail-safe (no end
-  code is written there: the stop may answer "sent, without confirmation").
+- What the stop does in an override or a fail-safe (no end code is written
+  there: the stop answers "the unit stays in … mode").
 - How fast `prmCurrentBLState` follows a write of the active mode (the read
   back must see it within 4.3 s of the click, else "sent, without
   confirmation" and the follow-up reads).
@@ -73,18 +83,34 @@ up to date at the end of every milestone.
 - **Values**: 0 % humidity and VOC 0 are "no sensor" (the table, Home
   Assistant); T5 only with the HRC2 component in the same read; texts as
   stable English keys, never a number.
-- **Stop = manual mode (0x0004) then level 0**, as Home Assistant's stand-by.
-  Away, summer, fireplace are ended first (0x8010, 0x8800, 0x8040) when the
-  stop's own read (0.6 s at most, skipped on failure) shows them; nothing is
-  written for night mode.
+- **Stop = level 0, manual mode (0x0004), level 0 again** (r1 I7): Home
+  Assistant's stand-by is manual then level 0; written level first so that a
+  stop cut after any write never leaves the unit in manual at the level kept
+  (cut after the first write: its mode is unchanged). The first level write
+  may be refused outside manual mode (an exception is not an error there);
+  the last one sets it again. Away, summer, fireplace, night are ended first
+  (0x8010, 0x8800, 0x8040, 0x8020) when the stop's read of the mode shows
+  them; that read (1 s) is done again on the next connection after a
+  failure, skipped only under 1.4 s before the deadline (the answer then
+  says the mode was not read).
+- **Stopped** = stand-by, or manual at level 0 (r1 B1): register 324 is the
+  manual level, 0 in automatic or night is not a stop; the same test for the
+  read back and the reads after.
+- **Alarms** (r1 I3): names of Home Assistant 1.4.0 (codes 12 overtemperature,
+  14 fire, 15 high water level, 16 fire protection; the 2013 table: 12 fire,
+  14 fire thermostat, 15 VOC); any other code is `unknown-<code>` and active;
+  the mode is refused on 12, 14, 16 and unknown codes.
 - **Stop guard** (lot 17 rules): kept in /data with its unit (address, port,
   unit id), its date (a date in the future is invalid), confirmed or not and
   its resends. Never lifted by the time; lifted by a mode written with the
   option (in `beforeSend` of its first write), or by two reads in a row
   showing the unit running when no resend is due (an unknown read resets the
-  count). Resends: three at most per stop, at the container start (not
-  confirmed), on reads showing the unit running (not confirmed, or within
-  two minutes of the stop write in this run).
+  count; only after a confirmed stop: one never confirmed is not "restarted
+  outside", the status says it did not take). Resends: three at most per
+  stop, at the container start (not confirmed), on every read showing the
+  unit running (not confirmed), on the first read begun after the write only
+  (confirmed: a restart from the panel later is never fought, r1 I4).
+  Exceptions 4-6 to a stop write are tried again within 3.5 s (r1 I1).
 - **The stop's target**: the configuration's unit, else the last unit kept
   in /data (so it leaves when Gladys does not give the configuration). A
   configuration saved during a stop never interrupts it.

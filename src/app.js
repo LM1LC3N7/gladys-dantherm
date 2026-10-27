@@ -60,7 +60,8 @@ import {
   BLOCKS,
   BLOCK_OF,
   END_SPECIAL,
-  FIRE_ALARMS,
+  ALARMS,
+  FIRE_ALARM_CODES,
   LIMITS,
   MODE_CHANGE_FROM,
   MODE_WRITES,
@@ -103,16 +104,20 @@ const freshUnit = () => ({
 
 const monotonic = () => performance.now();
 
-/** Stopped: fan level 0 or the current mode stand-by. Running: both known, neither. */
+/**
+ * Stopped: the current mode stand-by, or manual at fan level 0. Register 324
+ * is the MANUAL level: 0 there in automatic, night, away… is not a stop.
+ * The only test of a stop, for its read back and for the reads after it.
+ */
+const stopConfirmed = (values) =>
+  values.currentMode === 'standby' || (values.fanLevel === 0 && values.currentMode === 'manual');
+
+/** Stopped, running (both values known, not stopped) or unknown. */
 function stopState(values) {
-  if (values.fanLevel === 0 || values.currentMode === 'standby') return 'stopped';
+  if (stopConfirmed(values)) return 'stopped';
   if (values.fanLevel !== undefined && values.currentMode !== undefined) return 'running';
   return 'unknown';
 }
-
-/** The stop confirmed by a read back: level 0, in manual or stand-by. */
-const stopConfirmed = (values) =>
-  values.fanLevel === 0 && ['manual', 'standby'].includes(values.currentMode);
 
 export class DanthermApp {
   constructor({
@@ -166,6 +171,10 @@ export class DanthermApp {
     this.lastSentAt = -Infinity;
     /** When the last stop write left in this run (the window of its resends). */
     this.stopSentAt = -Infinity;
+    /** A confirmed stop is checked by the first read begun after this time (its write). */
+    this.stopCheckAfter = undefined;
+    /** The unit of the stop in flight. */
+    this.protectingKey = undefined;
     /** Reads in a row showing the unit running while a stop guard needs no resend. */
     this.runningReads = 0;
     /** The stop guard was lifted by two reads showing the unit running (shown in the status). */
@@ -712,7 +721,7 @@ export class DanthermApp {
       // Begun before a command left: it may show the state before it.
       this.logger.debug('dantherm: read begun before a command, not applied');
     } else {
-      this.applyRead(values);
+      this.applyRead(values, startedAt);
     }
     await this.publishAll();
     if (generation === this.generation) {
@@ -780,7 +789,7 @@ export class DanthermApp {
   }
 
   /** A read: the values of this read only (a value not read is unknown). */
-  applyRead(raw) {
+  applyRead(raw, startedAt = this.mono()) {
     const u = this.unit;
     const values = { ...raw };
     if (!hasRoomSensor(values.components)) {
@@ -799,7 +808,7 @@ export class DanthermApp {
     }
     u.values = values;
     u.readAt = this.mono();
-    this.observe(values);
+    this.observe(values, startedAt);
   }
 
   /** The salted fingerprint of a serial (the serial itself is never kept). */
@@ -892,10 +901,19 @@ export class DanthermApp {
       message = T.connected(T.summary(u.values ?? {}));
     }
     const guard = this.stopGuard();
+    const add = (extra) => ({ en: message.en + extra.en, fr: message.fr + extra.fr });
     if (guard && !guard.confirmed) {
-      message = { en: message.en + T.stopFailing.en, fr: message.fr + T.stopFailing.fr };
+      // The true cause: a mode the stop does not leave, resends spent, or resends to come.
+      const mode = u.online === true ? u.values?.currentMode : undefined;
+      if (mode && !['standby', 'manual'].includes(mode)) {
+        message = add(T.stopStuck(CURRENT_MODE_NAMES[mode]));
+      } else if (guard.reasserts >= TIMINGS.stopReasserts) {
+        message = add(T.stopNotTaken(guard.reasserts));
+      } else {
+        message = add(T.stopFailing);
+      }
     } else if (this.stopLifted) {
-      message = { en: message.en + T.stopLifted.en, fr: message.fr + T.stopLifted.fr };
+      message = add(T.stopLifted);
     }
     if (this.storeUnreadable) {
       message = join(message, T.storeUnreadable);
@@ -1303,7 +1321,7 @@ export class DanthermApp {
       if (!MODE_CHANGE_FROM.has(fresh.currentMode)) {
         throw this.refusal(ERRORS.specialMode(CURRENT_MODE_NAMES[fresh.currentMode]));
       }
-      if (FIRE_ALARMS.has(fresh.alarm)) {
+      if (FIRE_ALARM_CODES.has(fresh.alarmCode) || !(fresh.alarmCode < ALARMS.length)) {
         throw this.refusal(ERRORS.fireAlarm);
       }
       const already = Object.entries(plan.expect).every(([k, v]) => fresh[k] === v);
@@ -1327,6 +1345,7 @@ export class DanthermApp {
       };
     }
     this.logger.info(`dantherm: ${plan.role} ${plan.choice ?? ''}`.trim());
+    let liftedGuard;
     for (const [index, [address, value]] of plan.writes.entries()) {
       try {
         await this.writeParam(session, address, value, {
@@ -1341,6 +1360,7 @@ export class DanthermApp {
             if (isMode && this.memory.stopGuard) {
               // A mode written with the option is the latest wish: the stop guard
               // is lifted right before its synchronous write (never earlier).
+              liftedGuard = this.memory.stopGuard;
               this.liftStopGuard('a mode written from Gladys');
             }
           },
@@ -1351,8 +1371,13 @@ export class DanthermApp {
           err.kind === ERROR_KINDS.REFUSED &&
           NOT_APPLIED_EXCEPTIONS.has(err.code)
         ) {
-          // Refused by the unit (illegal function, address or value): not applied.
+          // Refused by the unit (illegal function, address or value): not applied,
+          // so the stop guard it lifted is put back (a protect pending stays).
           state.refused = true;
+          if (liftedGuard && !this.memory.stopGuard) {
+            this.memory.stopGuard = liftedGuard;
+            this.saveMemory();
+          }
         }
         throw err;
       }
@@ -1399,13 +1424,22 @@ export class DanthermApp {
     this.saveMemory();
   }
 
-  /** A second press while one runs joins it. */
+  /**
+   * A second press while one runs joins it; a stop for another unit (the
+   * stop kept for an older address at the start) is waited for, then sent.
+   */
   async protect(received, options = {}) {
+    const target = options.target ?? this.configUnit() ?? this.memory.unit;
     if (this.protecting) {
-      return this.protecting;
+      if (this.protectingKey === unitKeyOf(target)) {
+        return this.protecting;
+      }
+      await this.protecting.catch(() => {});
+      return this.protect(received, { ...options, target });
     }
-    const promise = this.sendStop(received, options);
+    const promise = this.sendStop(received, { ...options, target });
     this.protecting = promise;
+    this.protectingKey = unitKeyOf(target);
     try {
       return await promise;
     } finally {
@@ -1427,7 +1461,8 @@ export class DanthermApp {
    */
   async sendStop(
     received,
-    { target = this.configUnit() ?? this.memory.unit, reassert = false } = {},
+    // The target is chosen by protect(): the configuration's unit, else the one kept in /data.
+    { target, reassert = false } = {},
   ) {
     if (!target) {
       throw this.refusal(ERRORS.noHost);
@@ -1437,11 +1472,20 @@ export class DanthermApp {
     this.stopLifted = false;
     this.runningReads = 0;
     this.keepStopGuard(target, { confirmed: false, reassert });
-    const state = { written: false, skipRead: false };
+    // The mode read once per stop: again on the next connection when it failed
+    // (never skipped by a failure), skipped only when the deadline is too close.
+    const state = {
+      written: false,
+      modeKnown: false,
+      mode: undefined,
+      endDone: false,
+      modeUnread: false,
+    };
     const retryUntil = received + TIMINGS.commandSendBy;
-    const budget = () => Math.max(250, Math.min(TIMINGS.requestTimeout, retryUntil - this.mono()));
+    const answerBy = received + TIMINGS.commandAnswerBy;
     const writeOptions = () => ({
-      timeoutMs: budget(),
+      // A write may wait for its answer up to the answer at 4.3 s (a slow controller).
+      timeoutMs: Math.max(500, Math.min(TIMINGS.requestTimeout, answerBy - this.mono())),
       beforeSend: () => {
         state.written = true;
         this.lastSentAt = this.mono();
@@ -1449,32 +1493,57 @@ export class DanthermApp {
       },
     });
     const attempt = async (session) => {
-      if (!state.skipRead) {
-        // Read once: a failure never holds the stop back (it goes without ending a special mode).
-        state.skipRead = true;
-        let mode;
+      if (!state.modeKnown) {
+        if (retryUntil - this.mono() >= TIMINGS.stopReadMax + TIMINGS.stopReadMargin) {
+          try {
+            state.mode = (
+              await this.readBlock(session, 'currentMode', { timeoutMs: TIMINGS.stopReadMax })
+            ).currentMode;
+            state.modeKnown = true;
+            state.modeUnread = false;
+          } catch (err) {
+            // A Modbus exception: the unit answers, the mode cannot be read.
+            if (err.kind !== ERROR_KINDS.REFUSED) throw err;
+            state.modeKnown = true;
+            state.modeUnread = true;
+          }
+        } else {
+          // Too close to the deadline to read: the stop goes without it, and says so.
+          state.modeUnread = true;
+        }
+      }
+      if (Object.hasOwn(END_SPECIAL, state.mode) && !state.endDone) {
+        await this.writeParam(
+          session,
+          REGISTERS.ACTIVE_MODE,
+          END_SPECIAL[state.mode],
+          writeOptions(),
+        );
+        state.endDone = true;
+      }
+      for (const [index, [address, value]] of STOP_WRITES.entries()) {
         try {
-          mode = (
-            await this.readBlock(session, 'currentMode', {
-              timeoutMs: Math.max(100, Math.min(TIMINGS.stopReadMax, retryUntil - this.mono())),
-            })
-          ).currentMode;
+          await this.writeParam(session, address, value, writeOptions());
         } catch (err) {
-          if (err.kind !== ERROR_KINDS.REFUSED) throw err;
-        }
-        if (Object.hasOwn(END_SPECIAL, mode)) {
-          await this.writeParam(session, REGISTERS.ACTIVE_MODE, END_SPECIAL[mode], writeOptions());
+          // The first level 0, outside manual mode, may be refused: the last write sets it again.
+          if (!(index === 0 && err.kind === ERROR_KINDS.REFUSED)) throw err;
         }
       }
-      for (const [address, value] of STOP_WRITES) {
-        await this.writeParam(session, address, value, writeOptions());
-      }
+      // The read back may go on after the 3.5 s of the writes (a slow controller):
+      // up to the answer at 4.3 s, 1 s at least; a late confirmation is still kept.
+      const backBudget = () =>
+        Math.max(1_000, Math.min(TIMINGS.requestTimeout, answerBy - this.mono()));
       return {
-        ...(await this.readBlock(session, 'fanLevel', { timeoutMs: budget() })),
-        ...(await this.readBlock(session, 'currentMode', { timeoutMs: budget() })),
+        ...(await this.readBlock(session, 'fanLevel', { timeoutMs: backBudget() })),
+        ...(await this.readBlock(session, 'currentMode', { timeoutMs: backBudget() })),
       };
     };
+    // Idempotent writes: tried again after a lost connection, a timeout, a wrong
+    // answer, or a Modbus exception other than 1-3 (device failure, busy…).
     const AGAIN = [ERROR_KINDS.CLOSED, ERROR_KINDS.TIMEOUT, ERROR_KINDS.PROTOCOL];
+    const tryAgain = (err) =>
+      AGAIN.includes(err?.kind) ||
+      (err?.kind === ERROR_KINDS.REFUSED && !NOT_APPLIED_EXCEPTIONS.has(err.code));
     this.reserved += 1;
     const sending = (async () => {
       try {
@@ -1486,8 +1555,7 @@ export class DanthermApp {
               target,
             });
           } catch (err) {
-            const again =
-              AGAIN.includes(err?.kind) && this.mono() + TIMINGS.connectRetry < retryUntil;
+            const again = tryAgain(err) && this.mono() + TIMINGS.connectRetry < retryUntil;
             if (!again) {
               throw err;
             }
@@ -1517,7 +1585,9 @@ export class DanthermApp {
         this.saveMemory();
       }
       if (sameUnit) this.noteValues(outcome.back);
-      // Confirmed now, but a write of an older command may still land: checked by the next reads.
+      // Confirmed now, but a write of an older command may still land: the first
+      // read begun after this write checks it, once.
+      this.stopCheckAfter = this.stopSentAt;
       if (sameUnit) this.followUp();
       this.logger.info('dantherm: stop confirmed by the unit');
       this.updateStatus().catch(() => {});
@@ -1526,12 +1596,15 @@ export class DanthermApp {
     // Not confirmed: the next reads send it again.
     if (sameUnit) this.followUp();
     this.updateStatus().catch(() => {});
+    const unread = state.modeUnread ? ` ${word(ERRORS.modeUnread, this.config.language)}` : '';
     if (outcome.late) {
       sending.then(
         (back) => {
           if (back && stopConfirmed(back) && this.memory.stopGuard?.unit === unitKeyOf(target)) {
             this.memory.stopGuard.confirmed = true;
+            this.stopCheckAfter = this.stopSentAt;
             this.saveMemory();
+            this.updateStatus().catch(() => {});
           }
         },
         (err) => this.logger.warn(`dantherm: stop failed after the ack (${errorReason(err)})`),
@@ -1539,10 +1612,12 @@ export class DanthermApp {
       if (!state.written) {
         throw this.refusal(ERRORS.stopPending);
       }
-      throw this.refusal(ERRORS.sentUnconfirmed(word(ERRORS.noAnswerYet, this.config.language)));
+      throw this.refusal(
+        ERRORS.sentUnconfirmed(`${word(ERRORS.noAnswerYet, this.config.language)}${unread}`),
+      );
     }
     if (outcome.err) {
-      const reason = errorReason(outcome.err);
+      const reason = `${errorReason(outcome.err)}${unread}`;
       this.logger.warn(`dantherm: stop failed (${reason})`);
       if (!state.written) {
         throw this.refusal(ERRORS.notSent(reason));
@@ -1552,7 +1627,12 @@ export class DanthermApp {
     if (outcome.back && sameUnit) {
       this.noteValues(outcome.back);
     }
-    throw this.refusal(ERRORS.sentUnconfirmed(word(ERRORS.stillRunning, this.config.language)));
+    const stays = CURRENT_MODE_NAMES[outcome.back?.currentMode];
+    const why =
+      stays && !['standby', 'manual'].includes(outcome.back.currentMode)
+        ? ERRORS.staysIn(stays)
+        : ERRORS.stillRunning;
+    throw this.refusal(ERRORS.sentUnconfirmed(`${word(why, this.config.language)}${unread}`));
   }
 
   // --- Reads through the guards ----------------------------------------------------
@@ -1560,15 +1640,18 @@ export class DanthermApp {
   /**
    * A read (poll or follow-up) through the guards. Command guards lift when
    * the read shows what they asked. The stop guard of this unit:
-   *   - a read showing the unit stopped confirms it (never lifts it);
-   *   - a read showing it running sends the stop again (three times at most
-   *     per stop) when the stop is not confirmed, or within two minutes of
-   *     its write in this run (a write of an older command may still land);
-   *   - otherwise, two reads in a row showing it running (both known) mean
-   *     it was restarted outside Gladys: the guard is lifted, the status
-   *     says so. An unknown read breaks the row. The time never lifts it.
+   *   - a read showing it stopped (stand-by, or manual at level 0) confirms
+   *     it (never lifts it);
+   *   - not confirmed: every read showing the unit running sends it again,
+   *     three times at most; then the status says it did not take, until the
+   *     next press or a mode written (never lifted by reads nor time);
+   *   - confirmed: only the first read begun after its write sends it again
+   *     when it shows the unit running (an older write may still land); any
+   *     later read never fights a restart from the panel or the app: two
+   *     reads in a row showing it running lift the guard, the status says
+   *     so. An unknown read breaks the row. The time never lifts it.
    */
-  observe(values) {
+  observe(values, startedAt = this.mono()) {
     for (const [role, guard] of [...this.guards.entries()]) {
       if (!this.guardActive(role) || !guard.expect) continue;
       if (Object.entries(guard.expect).every(([k, v]) => values[k] === v)) {
@@ -1580,6 +1663,11 @@ export class DanthermApp {
       return;
     }
     const seen = stopState(values);
+    // The check after a confirmed stop: the first read begun after its write, once.
+    const check = this.stopCheckAfter !== undefined && startedAt > this.stopCheckAfter;
+    if (check && seen !== 'unknown') {
+      this.stopCheckAfter = undefined;
+    }
     if (seen === 'unknown') {
       this.runningReads = 0;
       return;
@@ -1592,9 +1680,13 @@ export class DanthermApp {
       }
       return;
     }
-    const inWindow = this.mono() - this.stopSentAt < TIMINGS.stopReassertWindow;
-    if ((!guard.confirmed || inWindow) && guard.reasserts < TIMINGS.stopReasserts) {
+    if (!guard.confirmed || check) {
       this.runningReads = 0;
+      if (guard.reasserts >= TIMINGS.stopReasserts) {
+        // Spent: the status says the stop did not take (a confirmed one: two reads lift it).
+        if (guard.confirmed) this.runningReads = 1;
+        return;
+      }
       if (this.protecting || this.reassertTimer || this.closed) {
         return;
       }

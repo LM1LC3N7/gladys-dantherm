@@ -31,21 +31,21 @@ see.
 
 One device, **Dantherm / Pluggit ventilation**, with:
 
-| Feature                           | Notes                                                                                                |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Ventilation mode                  | list: automatic (demand), week program, manual level 1 to 4                                          |
-| Current mode                      | text (stable English key): `standby`, `manual`, `demand`, `week-program`, `away`, `summer`, `night`… |
-| Fan level                         | 0 to 4 (0: stopped)                                                                                  |
-| Alarm                             | text: `none`, `exhaust-fan`, `supply-fan`, `bypass`, `fire`, `fire-thermostat`…                      |
-| Alarm active                      | 1 = an alarm is active                                                                               |
-| Bypass damper                     | text: `closed`, `in-progress`, `opening`, `closing`, `opened`                                        |
-| Temperatures T1 to T4             | outdoor, supply, extract, exhaust; °C                                                                |
-| Room temperature T5               | only when the unit lists the sensor (HRC2 component)                                                 |
-| Humidity                          | %; only with a sensor (0 is never published)                                                         |
-| Air quality (VOC, CO2 equivalent) | ppm; only with a VOC sensor (0 is never published)                                                   |
-| Filter: days left                 | days                                                                                                 |
-| Stop the ventilation              | button                                                                                               |
-| Reset the filter timer            | button                                                                                               |
+| Feature                           | Notes                                                                                                                                    |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Ventilation mode                  | list: automatic (demand), week program, manual level 1 to 4                                                                              |
+| Current mode                      | text (stable English key): `standby`, `manual`, `demand`, `week-program`, `away`, `summer`, `night`…                                     |
+| Fan level                         | 0 to 4 (0: stopped)                                                                                                                      |
+| Alarm                             | text: `none`, `exhaust-fan`, `supply-fan`, `bypass`, `overtemperature`, `fire`, `fire-protection`…; `unknown-<code>` for an unknown code |
+| Alarm active                      | 1 = an alarm is active                                                                                                                   |
+| Bypass damper                     | text: `closed`, `in-progress`, `opening`, `closing`, `opened`                                                                            |
+| Temperatures T1 to T4             | outdoor, supply, extract, exhaust; °C                                                                                                    |
+| Room temperature T5               | only when the unit lists the sensor (HRC2 component)                                                                                     |
+| Humidity                          | %; only with a sensor (0 is never published)                                                                                             |
+| Air quality (VOC, CO2 equivalent) | ppm; only with a VOC sensor (0 is never published)                                                                                       |
+| Filter: days left                 | days                                                                                                                                     |
+| Stop the ventilation              | button                                                                                                                                   |
+| Reset the filter timer            | button                                                                                                                                   |
 
 Texts are never published as a measure: an unknown or out-of-range value is
 not published (Gladys keeps the previous one).
@@ -64,18 +64,25 @@ interval. Reads outside the interval:
 ## Stopping the ventilation
 
 The **Stop the ventilation** button sets the unit to manual mode, level 0
-(what the Home Assistant integration calls stand-by). If the unit is in
-away, summer or fireplace mode, that mode is ended first.
+(what the Home Assistant integration calls stand-by). It first reads the
+current mode (1 s at most; read again on the next connection when the read
+fails): an away, summer, fireplace or night mode is ended first (ending the
+night mode, 0x8020, follows the Home Assistant integration and is still to
+check on a device). Then it writes level 0, manual mode, and level 0 again:
+cut after any of these writes, the stop never leaves the unit in manual mode
+at the level kept (up to 4).
 
 It depends on **no option**, nor on another command running, nor on a read
 running (it cuts it), nor on the wait after an error, nor on the serial
 number, nor on the state file in /data, nor on the configuration sent by
 Gladys (the last unit configured is kept in /data). It cancels a mode
 command not sent yet; an older write already sent that would apply after it
-is caught by its resends (below). A
-refused or closed connection, a missing or wrong answer are tried again
-every 250 ms until 3.5 s after the press. It is confirmed when the unit
-reads back level 0 in manual mode or stand-by.
+is caught by the read that follows (below). A refused or closed connection,
+a missing or wrong answer, a Modbus exception other than 1, 2 or 3 (device
+failure, busy) are tried again every 250 ms until 3.5 s after the press. It
+is confirmed only when the unit reads back stand-by, or manual mode at
+level 0: level 0 read in another mode (automatic, night, away…) is not a
+stop.
 
 It can still answer without having stopped the ventilation in these cases:
 
@@ -83,25 +90,31 @@ It can still answer without having stopped the ventilation in these cases:
 - a value other than 1;
 - unit unreachable until 3.5 s after the press ("not sent", or "not sent
   yet" while it still tries);
-- a missing or wrong answer, a Modbus exception, or a level read back other
-  than 0 ("sent, without confirmation"); a unit in night mode, an override
-  or a fail-safe may keep its own level.
+- a missing or wrong answer until the end, Modbus exception 1 to 3, or the
+  unit read back running ("sent, without confirmation"); a unit that stays
+  in an override, installer, fail-safe or defrost mode answers "the unit
+  stays in … mode"; when the current mode could not be read in time, the
+  answer says so (away, summer, fireplace or night were then not ended).
 
 A second press during the first joins it. The stop is kept in /data:
 
 - **not confirmed**, it is sent again at the next start of the integration
-  (before any read and even if Gladys does not answer) and by the reads that
-  show the unit running, three times at most;
-- **confirmed**, it is sent again by the reads of the next two minutes that
-  show the unit running (an older write may still land), three times at
-  most.
+  (before any read and even if Gladys does not answer) and by every read
+  that shows the unit running, three times at most; then the status says
+  the stop did not take (or that the unit stays in its mode) until the next
+  press or a mode chosen;
+- **confirmed**, it is sent again once, when the first read begun after its
+  write (5 s later) shows the unit running (an older write may still land).
+  A restart made later from the panel or the app is never fought.
 
 This guard is **never lifted by the time**. It is lifted only:
 
-- by a mode chosen from Gladys with the option on (right before its write);
-- by two reads in a row showing the unit running when no resend is due:
-  the unit was restarted outside Gladys (panel, app); the status says so. An
-  unknown read between the two starts the count again.
+- by a mode chosen from Gladys with the option on (right before its write;
+  put back when the unit refuses that write with exception 1, 2 or 3);
+- after a confirmed stop, by two reads in a row showing the unit running
+  when no resend is due: the unit was restarted outside Gladys (panel,
+  app); the status says so. An unknown read between the two starts the
+  count again.
 
 ## Optional commands
 
@@ -126,7 +139,11 @@ reaches the ventilation.
 - The mode is refused when the unit is in a mode Gladys does not set: away,
   summer, fireplace, night, external input or hygrostat override, installer,
   fail-safe, fail off, defrost. Change that mode on the unit or in its app.
-- The mode is refused in **fire alarm** (alarm `fire` or `fire-thermostat`).
+- The mode is refused in **fire, overtemperature or unknown alarm** (codes
+  12, 14, 16 and any code out of the list: `overtemperature`, `fire`,
+  `fire-protection`, `unknown-<code>`). The code names follow the Home
+  Assistant integration; the 2013 table names codes 12 to 15 differently,
+  hence the three codes refused.
 - **Serial number**: the integration keeps a salted fingerprint of the
   unit's serial number (never the number itself). If another number is read
   (unit replaced, or another device at the same address), its values are

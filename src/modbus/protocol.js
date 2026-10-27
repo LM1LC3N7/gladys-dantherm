@@ -98,9 +98,15 @@ export function decodeBlock(block, words) {
     case 'fanLevel':
       put('fanLevel', within(u32(0), 0, 4));
       break;
-    case 'alarm':
-      put('alarm', ALARMS[within(u32(0), 0, ALARMS.length - 1)]);
+    case 'alarm': {
+      // Every code is shown: a code not in the list is an active alarm, never silence.
+      const code = u32(0);
+      if (code !== undefined) {
+        put('alarmCode', code);
+        put('alarm', ALARMS[code] ?? `unknown-${code}`);
+      }
       break;
+    }
     case 'firmware': {
       // Major in byte 1, minor in byte 0 (2.70 is 0x0246).
       const fw = within(u32(0), 1, 0xffff);

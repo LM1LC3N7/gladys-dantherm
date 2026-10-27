@@ -122,10 +122,13 @@ const VALUE_OF = {
 /** 0 is "no sensor" for these (the manufacturer's table, the Home Assistant integration). */
 const NOT_ZERO = new Set([FEATURES.HUMIDITY, FEATURES.AIR_QUALITY]);
 
+/** A code the alarm list does not name. */
+const UNKNOWN_ALARM = /^unknown-\d{1,10}$/;
+
 /** The texts read, with the keys each may take. */
 const TEXT_OF = {
   [FEATURES.CURRENT_MODE]: ['currentMode', CURRENT_MODES],
-  [FEATURES.ALARM]: ['alarm', ALARMS],
+  [FEATURES.ALARM]: ['alarm', { includes: (v) => ALARMS.includes(v) || UNKNOWN_ALARM.test(v) }],
   [FEATURES.BYPASS]: ['bypass', [...BYPASS_STATES.values()]],
 };
 
@@ -201,7 +204,7 @@ export function deviceStates(ids, values) {
       states.push({ device_feature_external_id: ids.feature(role), text: values[key] });
     }
   }
-  if (ALARMS.includes(values.alarm)) {
+  if (ALARMS.includes(values.alarm) || UNKNOWN_ALARM.test(values.alarm ?? '')) {
     states.push({
       device_feature_external_id: ids.feature(FEATURES.ALARM_ACTIVE),
       state: values.alarm === 'none' ? 0 : 1,

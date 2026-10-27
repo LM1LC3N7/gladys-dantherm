@@ -109,7 +109,12 @@ export const MODE_CHANGE_FROM = new Set([
   'servo-flow',
 ]);
 
-/** prmLastActiveAlarm (register 516): 0 none, then the highest active alarm. */
+/**
+ * prmLastActiveAlarm (register 516): 0 none, then the highest active alarm,
+ * named as the Home Assistant integration 1.4.0 names codes 1 to 16 (the 2013
+ * table differs from 12 on: see TODO.md). Any other code is shown as
+ * `unknown-<code>` and counts as an active alarm.
+ */
 export const ALARMS = [
   'none',
   'exhaust-fan',
@@ -121,16 +126,22 @@ export const ALARMS = [
   't4-sensor',
   't5-sensor',
   'humidity-sensor',
-  'outdoor-below-13',
-  'supply-below-5',
-  'fire',
+  'outdoor-temperature',
+  'supply-temperature',
+  'overtemperature',
   'communication',
-  'fire-thermostat',
-  'voc-sensor',
+  'fire',
+  'high-water-level',
+  'fire-protection',
 ];
 
-/** Alarms in which no command that moves air is sent (the unit handles them). */
-export const FIRE_ALARMS = new Set(['fire', 'fire-thermostat']);
+/**
+ * Alarm codes in which no command that moves air is sent (the unit handles
+ * them): fire (14) and fire protection (16) for Home Assistant, fire (12) and
+ * fire thermostat (14) for the 2013 table; on the safe side, all three. Any
+ * code this integration does not know is refused too.
+ */
+export const FIRE_ALARM_CODES = new Set([12, 14, 16]);
 
 /** prmRamIdxBypassActualState (register 198). */
 export const BYPASS_STATES = new Map([
@@ -146,6 +157,8 @@ export const END_SPECIAL = {
   away: 0x8010,
   summer: 0x8800,
   fireplace: 0x8040,
+  // NightDisable of the Home Assistant integration (to check on a real unit).
+  night: 0x8020,
 };
 
 /** Installed components (prmSystemID, low 16 bits): the room sensor T5 comes with HRC2. */
@@ -206,8 +219,17 @@ export const MODE_WRITES = {
   ),
 };
 
-/** The stop: manual mode, fan level 0 (the Home Assistant integration's stand-by). */
+/**
+ * The stop: manual mode at fan level 0 (the Home Assistant integration's
+ * stand-by). Level 0 is written first, so that a stop cut after any write
+ * never leaves the unit in manual mode at the level kept before (up to 4):
+ * cut after the first write, the unit keeps its mode (only the manual level
+ * kept is 0); cut after the second, it is manual at level 0. The last write
+ * sets level 0 again, in case the unit did not take the level outside manual
+ * mode (an exception to the first write is then not an error).
+ */
 export const STOP_WRITES = [
+  [REGISTERS.FAN_LEVEL, 0],
   [REGISTERS.ACTIVE_MODE, 0x0004],
   [REGISTERS.FAN_LEVEL, 0],
 ];
@@ -288,17 +310,22 @@ export const TIMINGS = {
   /** The fresh reads of a command: 0.3 s at least left to send after them. */
   commandMinRead: 300,
   commandMinSend: 300,
-  /** The stop reads the current mode first (to end away, summer, fireplace): 0.6 s at most. */
-  stopReadMax: 600,
+  /**
+   * The stop reads the current mode first (to end away, summer, fireplace,
+   * night): 1 s at most, read again on the next connection when it failed,
+   * skipped only when less than 1.4 s is left before the 3.5 s deadline.
+   */
+  stopReadMax: 1_000,
+  stopReadMargin: 400,
   /** Reads after a command, spaced: its effect, then a check. */
   followUps: [5 * SECOND, 20 * SECOND],
   /** A sent command keeps its guard until a read shows what it asked, or 90 s. */
   guard: 90 * SECOND,
   /**
-   * A stop: the reads of the next 2 minutes send it again when the unit reads
-   * running (a write of an older command may still land); three times at
-   * most per stop.
+   * A stop sent again by the reads three times at most: a stop not confirmed
+   * by every read showing the unit running; a confirmed one only by the
+   * first read begun after its write (a write of an older command may still
+   * land), never later (a restart from the panel or the app is not fought).
    */
-  stopReassertWindow: 2 * MINUTE,
   stopReasserts: 3,
 };

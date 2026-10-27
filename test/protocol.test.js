@@ -53,8 +53,16 @@ test('decoders: plausible values only', () => {
   assert.deepEqual(decodeBlock(BLOCK_OF.currentMode, words([17])), {});
   assert.deepEqual(decodeBlock(BLOCK_OF.fanLevel, words([5])), {});
   assert.deepEqual(decodeBlock(BLOCK_OF.fanLevel, words([0])), { fanLevel: 0 });
-  assert.deepEqual(decodeBlock(BLOCK_OF.alarm, words([12])), { alarm: 'fire' });
-  assert.deepEqual(decodeBlock(BLOCK_OF.alarm, words([0x10000])), {}, 'high word set: unknown');
+  assert.deepEqual(decodeBlock(BLOCK_OF.alarm, words([14])), { alarm: 'fire', alarmCode: 14 });
+  assert.deepEqual(decodeBlock(BLOCK_OF.alarm, words([16])), {
+    alarm: 'fire-protection',
+    alarmCode: 16,
+  });
+  assert.deepEqual(
+    decodeBlock(BLOCK_OF.alarm, words([0x10000])),
+    { alarm: 'unknown-65536', alarmCode: 0x10000 },
+    'a code not in the list is shown, never silence',
+  );
   assert.deepEqual(decodeBlock(BLOCK_OF.firmware, words([0x0246])), { firmware: '2.70' });
   assert.deepEqual(decodeBlock(BLOCK_OF.climate, words([0, 0x40])), { bypass: 'opening' });
   assert.deepEqual(decodeBlock(BLOCK_OF.climate, words([101, 7])), {}, 'out of range');

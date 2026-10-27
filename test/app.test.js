@@ -6,6 +6,7 @@
 // -----------------------------------------------------------------------------
 
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { DEVICE_TRANSPORTS } from '@gladysassistant/integration-sdk';
 import { createFakeGladys } from '@gladysassistant/integration-sdk/testing';
@@ -28,6 +29,7 @@ const ALLOW = { host: HOST, allow_commands: true };
 const DEVICE = 'ext:test-integration:dantherm:unit';
 const feature = (role) => `${DEVICE}:${role}`;
 const STOP = [
+  [324, 0],
   [168, 4],
   [324, 0],
 ];
@@ -63,7 +65,15 @@ async function setup(
       await settle(3);
     }
   };
-  t.after(() => app.shutdown());
+  t.after(async () => {
+    // Shut down and drain while the mocked clock still runs: nothing leaks into the next test.
+    app.shutdown();
+    try {
+      await advance(5 * SECOND, 100);
+    } catch {
+      // The clock is already restored.
+    }
+  });
   await before?.({ app, gladys, unit, advance });
   const connecting = gladys.connect();
   await settle();
@@ -427,7 +437,7 @@ test('a stop kept with a date in the future, or resent three times, is not sent 
   assert.equal(store.data.stopGuard, null);
 });
 
-test('a stop not applied: "sent, without confirmation", resent by the reads three times, then lifted by two running reads', async (t) => {
+test('a stop not applied: "sent, without confirmation", resent three times, then the status says it did not take (I5)', async (t) => {
   const ctx = await setup(t);
   ctx.unit.ignoreWrites = true;
   const ack = await ctx.press('stop', 1, 5 * SECOND);
@@ -436,10 +446,13 @@ test('a stop not applied: "sent, without confirmation", resent by the reads thre
   assert.match(ctx.status().message.fr, /pas confirmé/);
   // Follow-ups and polls send it again, three times at most.
   await ctx.advance(4 * MINUTE, 200);
-  const stops = ctx.unit.writes().filter(([a, v]) => a === 324 && v === 0).length;
+  const stops = ctx.unit.writes().filter(([a, v]) => a === 168 && v === 4).length;
   assert.equal(stops, 4, 'the stop and three resends');
-  assert.equal(ctx.store.data.stopGuard, null, 'lifted by two reads running in a row');
-  assert.match(ctx.status().message.fr, /relancée hors de Gladys/);
+  const guard = ctx.store.data.stopGuard;
+  assert.equal(guard.confirmed, false, 'never lifted by reads when it never took');
+  assert.equal(guard.reasserts, 3);
+  assert.match(ctx.status().message.fr, /n’a pas pris \(3 renvois\)/);
+  assert.doesNotMatch(ctx.status().message.fr, /relancée hors de Gladys/);
 });
 
 test('a write of an older command landing after a stop: the next read sends the stop again', async (t) => {
@@ -662,7 +675,7 @@ test('another serial at the address: a stop guard never sends to it', async (t) 
   assert.equal((await ack).success, false);
   setSerial(ctx.unit.regs, SERIAL + 7n);
   await ctx.advance(3 * MINUTE, 200);
-  assert.equal(ctx.unit.writes().filter(([a, v]) => a === 324 && v === 0).length, 1);
+  assert.equal(ctx.unit.writes().filter(([a, v]) => a === 168 && v === 4).length, 1);
 });
 
 test('a device created long after the last read gets no old value', async (t) => {
@@ -673,4 +686,202 @@ test('a device created long after the last read gets no old value', async (t) =>
   await ctx.gladys.fake.deviceCreated(ctx.gladys.fake.discoveredDevices[0]);
   await ctx.advance(2 * SECOND, 100);
   assert.equal(ctx.gladys.fake.states.length, states);
+});
+
+// --- Review r1 -------------------------------------------------------------------
+
+const modeWrites = (unit) => unit.writes().filter(([a, v]) => a === 168 && v === 4).length;
+
+test('r1 B1: level 0 in night or automatic is not a stop: never confirmed, sent again', async (t) => {
+  for (const mode of [16, 2]) {
+    await t.test(`current mode ${mode}`, async (st) => {
+      const unit = fakeDantherm();
+      setU32(unit.regs, 472, mode);
+      unit.ignoreAddresses.add(168);
+      const ctx = await setup(st, { unit });
+      const ack = await ctx.press('stop');
+      assert.equal(ack.success, false);
+      assert.match(String(ack.error), /reste en mode|toujours en marche/);
+      assert.equal(unit.u32(324), 0, 'the manual level is 0');
+      await ctx.advance(3 * MINUTE, 200);
+      assert.equal(ctx.store.data.stopGuard.confirmed, false, 'never confirmed by level 0 alone');
+      assert.ok(modeWrites(unit) >= 2, 'sent again');
+      assert.match(ctx.status().message.fr, /n’a pas pris/);
+    });
+  }
+});
+
+test('r1 B2: a failed read of the mode is read again: the away mode is ended', async (t) => {
+  const unit = fakeDantherm();
+  setU32(unit.regs, 472, 5);
+  const ctx = await setup(t, { unit });
+  unit.silentOnce.add('3:472');
+  const ack = await ctx.press('stop');
+  assert.equal(ack.success, true, String(ack.error));
+  assert.deepEqual(unit.writes(), [[168, 0x8010], ...STOP]);
+});
+
+test('r1 B2: a slow controller (0.7 s an answer): the mode is read and away ended', async (t) => {
+  const unit = fakeDantherm();
+  setU32(unit.regs, 472, 5);
+  const ctx = await setup(t, { unit });
+  unit.delay = 700;
+  await ctx.press('stop', 1, 10 * SECOND);
+  assert.deepEqual(unit.writes().slice(0, 4), [[168, 0x8010], ...STOP]);
+  assert.equal(unit.u32(472), 0);
+});
+
+test('r1 I1: an exception 6 (busy) to a stop write is tried again within the deadline', async (t) => {
+  const ctx = await setup(t);
+  ctx.unit.exceptionsOnce.add('16:168');
+  ctx.unit.exceptionCode = 6;
+  const ack = await ctx.press('stop');
+  assert.equal(ack.success, true, String(ack.error));
+  assert.equal(ctx.unit.u32(472), 0);
+});
+
+test('r1 I2: the stop ends the night mode first', async (t) => {
+  const unit = fakeDantherm();
+  setU32(unit.regs, 472, 16);
+  const ctx = await setup(t, { unit });
+  assert.equal((await ctx.press('stop')).success, true);
+  assert.deepEqual(unit.writes(), [[168, 0x8020], ...STOP]);
+});
+
+test('r1 I3: every alarm code shown; fire, fire protection, overtemperature and unknown codes refuse the mode', async (t) => {
+  const ctx = await setup(t, { config: ALLOW });
+  for (const [code, text, refused] of [
+    [12, 'overtemperature', true],
+    [14, 'fire', true],
+    [16, 'fire-protection', true],
+    [40, 'unknown-40', true],
+    [15, 'high-water-level', false],
+  ]) {
+    setU32(ctx.unit.regs, 516, code);
+    await ctx.advance(61 * SECOND, 200);
+    assert.equal(ctx.state('alarm').text, text);
+    assert.equal(ctx.state('alarm-active').state, 1);
+    const ack = await ctx.press('mode', refused ? 'manual-4' : 'manual-1');
+    assert.equal(ack.success, !refused, `${code}: ${ack.error}`);
+  }
+});
+
+test('r1 I4: a restart from the panel 30 s after a confirmed stop is never fought', async (t) => {
+  const ctx = await setup(t);
+  assert.equal((await ctx.press('stop')).success, true);
+  await ctx.advance(25 * SECOND, 200);
+  ctx.unit.apply(168, 4);
+  ctx.unit.apply(324, 2);
+  const before = modeWrites(ctx.unit);
+  await ctx.advance(3 * MINUTE, 200);
+  assert.equal(modeWrites(ctx.unit), before, 'no resend');
+  assert.equal(ctx.unit.u32(324), 2);
+  assert.equal(ctx.store.data.stopGuard, null);
+  assert.match(ctx.status().message.fr, /relancée hors de Gladys/);
+});
+
+test('r1 I6a: the stop guard is in /data before the first byte', async (t) => {
+  const ctx = await setup(t);
+  let kept;
+  ctx.unit.onWrite = () => {
+    kept ??= ctx.store.data.stopGuard;
+  };
+  await ctx.press('stop');
+  assert.equal(kept?.confirmed, false);
+  assert.equal(kept?.host, HOST);
+});
+
+test('r1 I6d: the filter reset button only takes 1', async (t) => {
+  const ctx = await setup(t, { config: { host: HOST, allow_filter_reset: true } });
+  for (const value of [0, '0', true, 'on', '', null, 2]) {
+    assert.equal((await ctx.press('filter-reset', value, 100)).success, false, String(value));
+  }
+  assert.deepEqual(ctx.unit.writes(), []);
+});
+
+test('r1 I6e: configurations are applied one after the other, in order', async (t) => {
+  const ctx = await setup(t);
+  const order = [];
+  const first = ctx.app.serialize(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    order.push(1);
+  });
+  const second = ctx.app.serialize(async () => order.push(2));
+  await ctx.advance(200);
+  await Promise.all([first, second]);
+  assert.deepEqual(order, [1, 2]);
+});
+
+test('r1 I6f-g: the serial is kept salted, never in clear', async (t) => {
+  const ctx = await setup(t);
+  const { salt, fingerprint } = ctx.store.data.identity;
+  const sha = (text) => createHash('sha256').update(text).digest('hex').slice(0, 16);
+  assert.equal(fingerprint, sha(`${salt}:${SERIAL}`));
+  assert.notEqual(fingerprint, sha(`${SERIAL}`));
+  assert.doesNotMatch(JSON.stringify(ctx.store.data), new RegExp(String(SERIAL)));
+});
+
+test('r1 I6h: an unreadable serial is never another unit', async (t) => {
+  const ctx = await setup(t);
+  ctx.unit.exceptions.add('3:2');
+  setU32(ctx.unit.regs, 554, 33);
+  await ctx.advance(61 * SECOND, 200);
+  assert.equal(ctx.state('filter-days-left').state, 33, 'values still shown');
+  assert.doesNotMatch(ctx.status().message.fr, /numéro de série/);
+});
+
+test('r1 I6i: a read begun before a command left is not applied', async (t) => {
+  const store = memoryStore();
+  const ctx = await setup(t, { config: { host: HOST, allow_filter_reset: true }, store });
+  // The next read waits for /data (written before it) while the filter reset is written.
+  const save = store.save.bind(store);
+  store.save = async (data) => {
+    await new Promise((resolve) => setTimeout(resolve, 3 * SECOND));
+    return save(data);
+  };
+  await ctx.advance(59 * SECOND, 500);
+  for (let i = 0; i < 100 && ctx.app.lastAttemptAt < Date.now() - 30 * SECOND; i += 1) {
+    await ctx.advance(50, 10);
+  }
+  await ctx.press('filter-reset', 1, 6 * SECOND);
+  assert.ok(ctx.logs.some((l) => l.includes('read begun before a command, not applied')));
+});
+
+test('r1 I6j: a schedule shorter than the interval never reads sooner', async (t) => {
+  const ctx = await setup(t);
+  const reads = ctx.unit.reads();
+  ctx.app.schedule(1_000);
+  await ctx.advance(50 * SECOND, 500);
+  assert.equal(ctx.unit.reads(), reads);
+});
+
+test('r1 I7: a stop cut after its first write never leaves the unit in manual at the level kept', async (t) => {
+  const unit = fakeDantherm();
+  setU32(unit.regs, 472, 2); // automatic
+  setU32(unit.regs, 168, 2);
+  setU32(unit.regs, 324, 3); // manual level kept
+  const ctx = await setup(t, { unit });
+  unit.onWrite = () => {
+    // The network is gone right after the first write (applied and answered).
+    unit.onWrite = undefined;
+    setTimeout(() => {
+      unit.down = true;
+      unit.silent.add(16);
+      unit.silent.add(3);
+    }, 0);
+  };
+  await ctx.press('stop', 1, 6 * SECOND);
+  assert.deepEqual(unit.writes()[0], [324, 0], 'level 0 first');
+  assert.notEqual(unit.u32(472), 1, 'never manual at the level kept');
+  assert.equal(unit.u32(324), 0);
+});
+
+test('r1 M2: a mode refused by the unit (exception 2) puts the stop guard back', async (t) => {
+  const ctx = await setup(t, { config: ALLOW });
+  assert.equal((await ctx.press('stop')).success, true);
+  assert.ok(ctx.store.data.stopGuard);
+  ctx.unit.exceptions.add('16:168');
+  const ack = await ctx.press('mode', 'manual-2');
+  assert.match(String(ack.error), /a refusé la commande/);
+  assert.ok(ctx.store.data.stopGuard, 'the guard is back: nothing was applied');
 });

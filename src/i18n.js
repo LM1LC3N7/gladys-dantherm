@@ -145,6 +145,16 @@ export const T = {
     ' The last stop is not confirmed: the next reads send it again.',
     ' Le dernier arrêt n’est pas confirmé : les prochaines lectures le renvoient.',
   ),
+  stopStuck: (mode) =>
+    both(
+      ` The last stop did not take: the unit stays in ${mode.en} mode (change it on the unit or in its app, or press the stop again).`,
+      ` Le dernier arrêt n’a pas pris : la centrale reste en mode ${mode.fr} (changez-le sur la centrale ou dans son application, ou appuyez de nouveau sur l’arrêt).`,
+    ),
+  stopNotTaken: (count) =>
+    both(
+      ` The last stop did not take (${count} resends): press it again or check the unit.`,
+      ` Le dernier arrêt n’a pas pris (${count} renvois) : appuyez de nouveau ou vérifiez la centrale.`,
+    ),
   stopLifted: both(
     ' The unit was restarted outside Gladys after a stop (read twice running).',
     ' La centrale a été relancée hors de Gladys après un arrêt (lue deux fois en marche).',
@@ -194,8 +204,8 @@ export const ERRORS = {
       `La centrale est dans un mode que Gladys ne change pas (${mode.fr}) : changez-le sur la centrale ou dans son application. Non envoyée.`,
     ),
   fireAlarm: both(
-    'The unit is in fire alarm: no command that moves air is sent. Not sent.',
-    'La centrale est en alarme incendie : aucune commande qui fait circuler l’air n’est envoyée. Non envoyée.',
+    'The unit is in fire, overtemperature or unknown alarm: no command that moves air is sent. Not sent.',
+    'La centrale est en alarme incendie, surchauffe ou inconnue : aucune commande qui fait circuler l’air n’est envoyée. Non envoyée.',
   ),
   otherUnit: both(
     'The serial number of the unit changed: another device may answer at this address. Press "Test the connection" to accept it. Not sent.',
@@ -256,5 +266,11 @@ export const ERRORS = {
     ),
   notYet: both('not applied yet', 'pas encore appliquée'),
   stillRunning: both('still running', 'toujours en marche'),
+  staysIn: (mode) =>
+    both(`the unit stays in ${mode.en} mode`, `la centrale reste en mode ${mode.fr}`),
+  modeUnread: both(
+    '(current mode not read: away, summer, fireplace or night could not be ended)',
+    '(mode en cours non relu : absence, été, cheminée ou nuit n’ont pas pu être quittés)',
+  ),
   noAnswerYet: both('no answer yet', 'pas encore de réponse'),
 };

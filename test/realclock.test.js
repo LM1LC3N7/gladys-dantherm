@@ -128,6 +128,7 @@ test('real sockets: the stop goes through a frozen read, one connection at a tim
   const took = clock.monotonic() - started;
   assert.ok(took < 4_300, `answered in ${Math.round(took)} ms (simulated)`);
   assert.deepEqual(state.writes, [
+    [324, 0],
     [168, 4],
     [324, 0],
   ]);

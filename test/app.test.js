@@ -885,3 +885,96 @@ test('r1 M2: a mode refused by the unit (exception 2) puts the stop guard back',
   assert.match(String(ack.error), /a refusé la commande/);
   assert.ok(ctx.store.data.stopGuard, 'the guard is back: nothing was applied');
 });
+
+// --- Review r2 -------------------------------------------------------------------
+
+test('r2: the stop answers before Gladys gives up (5 s), on a silent or slow unit', async (t) => {
+  for (const [name, change] of [
+    ['silent', (unit) => unit.silent.add(16)],
+    ['2 s an answer', (unit) => (unit.delay = 2_000)],
+  ]) {
+    await t.test(name, async (st) => {
+      const ctx = await setup(st);
+      change(ctx.unit);
+      const start = Date.now();
+      let answeredAt;
+      const ack = ctx.fire('stop').then((a) => {
+        answeredAt = Date.now();
+        return a;
+      });
+      await ctx.advance(8 * SECOND, 20);
+      assert.equal((await ack).success, false);
+      assert.ok(answeredAt - start <= 4_500, `answered after ${answeredAt - start} ms`);
+    });
+  }
+});
+
+test('r2: a unit refusing the first level 0 (exception 2) is still stopped', async (t) => {
+  const ctx = await setup(t);
+  ctx.unit.exceptionsOnce.add('16:324');
+  ctx.unit.exceptionCode = 2;
+  const ack = await ctx.press('stop');
+  assert.equal(ack.success, true, String(ack.error));
+  assert.deepEqual(ctx.unit.writes(), STOP);
+  assert.equal(ctx.unit.u32(472), 0);
+});
+
+test('r2: a guard never confirmed is never lifted by reads, even long after its resends', async (t) => {
+  const ctx = await setup(t);
+  ctx.unit.ignoreWrites = true;
+  await ctx.press('stop', 1, 5 * SECOND);
+  await ctx.advance(10 * MINUTE, 500);
+  const guard = ctx.store.data.stopGuard;
+  assert.equal(guard.reasserts, 3);
+  assert.equal(guard.confirmed, false);
+  assert.equal(modeWrites(ctx.unit), 4, 'no more resends');
+  assert.match(ctx.status().message.fr, /n’a pas pris/);
+  assert.equal(ctx.app.stopLifted, false);
+});
+
+test('r2: a stop for another unit waits for the one running, never joins it', async (t) => {
+  const other = fakeDantherm();
+  other.down = true;
+  const unit = fakeDantherm();
+  unit.connectFn = (host) => (host === '192.168.1.81' ? other.connect() : unit.connect());
+  const store = memoryStore({
+    unit: { ...UNIT, host: '192.168.1.81' },
+    stopGuard: { ...UNIT, host: '192.168.1.81', at: NOW - SECOND, confirmed: false, reasserts: 0 },
+  });
+  const ctx = await setup(t, {
+    unit,
+    store,
+    before: async ({ app }) => {
+      // The stop kept for the old unit leaves at the start and keeps trying.
+      await app.boot();
+    },
+  });
+  assert.ok(ctx.app.protecting, 'the stop of the old unit still runs');
+  const ack = ctx.fire('stop');
+  await ctx.advance(8 * SECOND, 50);
+  assert.equal((await ack).success, true, String((await ack).error));
+  assert.deepEqual(unit.writes(), STOP, 'the unit configured is stopped');
+  assert.ok(other.refused > 0, 'the old unit was tried first');
+});
+
+test('r2: reads seen while a stop was never confirmed never count toward "restarted outside Gladys"', async (t) => {
+  // White box: through the public paths a guard confirmed later always gets a
+  // check read first; this pins the count itself.
+  const ctx = await setup(t);
+  ctx.app.memory.stopGuard = {
+    ...UNIT,
+    unit: ctx.app.unitKey(),
+    at: Date.now(),
+    confirmed: false,
+    reasserts: 3,
+  };
+  const running = { currentMode: 'manual', fanLevel: 2 };
+  ctx.app.observe(running, Date.now());
+  ctx.app.observe(running, Date.now());
+  assert.ok(ctx.app.memory.stopGuard, 'never lifted while not confirmed');
+  assert.equal(ctx.app.runningReads, 0);
+  ctx.app.memory.stopGuard.confirmed = true;
+  ctx.app.stopCheckAfter = undefined;
+  ctx.app.observe(running, Date.now());
+  assert.ok(ctx.app.memory.stopGuard, 'one read running after the confirmation is not enough');
+});

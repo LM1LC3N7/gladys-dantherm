@@ -157,6 +157,8 @@ jamais la ventilation.
   `fire-protection`, `unknown-<code>`). Les noms des codes suivent
   l’intégration de Home Assistant ; la table de 2013 nomme autrement les
   codes 12 à 15, d’où les trois codes refusés.
+  Un registre d’alarme non rempli (0xFFFFFFFF) se lit `unknown-4294967295` :
+  alarme active et mode refusé, du côté sûr.
 - **Numéro de série** : l’intégration retient une empreinte salée du numéro
   de série de la centrale (jamais le numéro lui-même). Si un autre numéro
   est lu (centrale remplacée, ou autre appareil à la même adresse), ses

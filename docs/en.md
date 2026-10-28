@@ -144,6 +144,8 @@ reaches the ventilation.
   `fire-protection`, `unknown-<code>`). The code names follow the Home
   Assistant integration; the 2013 table names codes 12 to 15 differently,
   hence the three codes refused.
+  An alarm register not filled (0xFFFFFFFF) reads `unknown-4294967295`: an
+  active alarm and the mode refused, on the safe side.
 - **Serial number**: the integration keeps a salted fingerprint of the
   unit's serial number (never the number itself). If another number is read
   (unit replaced, or another device at the same address), its values are

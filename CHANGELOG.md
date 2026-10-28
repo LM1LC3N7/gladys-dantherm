@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-28
+
 ### Added
 
 - Dantherm (HCV, RCV, HCH) and Pluggit (AP, iFlow) heat recovery ventilation
@@ -23,3 +25,6 @@ the notes of the version's GitHub Release.
   mode commands" and the filter reset behind "Allow the filter reset", both
   off by default.
 - "Test the connection" button, docs in English and French, cover image.
+
+[Unreleased]: https://github.com/LM1LC3N7/gladys-dantherm/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-dantherm/releases/tag/v0.1.1

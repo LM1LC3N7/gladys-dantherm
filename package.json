@@ -1,6 +1,6 @@
 {
   "name": "gladys-dantherm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Gladys Assistant external integration for Dantherm (HCV, RCV, HCH) and Pluggit (AP, iFlow) heat recovery ventilation over local Modbus TCP: temperatures, mode, fan level, bypass, humidity, air quality, filter, alarms; a stop never behind an option; optional mode and filter reset. Unofficial, not affiliated with Dantherm or Pluggit.",
   "type": "module",

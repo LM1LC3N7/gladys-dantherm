@@ -29,6 +29,12 @@ up to date at the end of every milestone.
       I5 status "did not take"; I6 tests for the 10 survivors; I7 level 0
       first; M1 a stop for another unit waits; M2 guard put back on a refused
       write. Tests named `r1 …` in `test/app.test.js`.
+- [x] Review r3 (2026-10-28): APPROUVÉ, no blocker.
+- [ ] Next patch — review r3 leftovers, after a test on a real unit: 0x8020
+      to leave night mode, level 0 (324) written outside manual mode, alarm
+      codes 12 to 16, the unit type byte; tests for the stop write deadline
+      cap and the 1.4 s threshold of the mode read; the "last stop did not
+      take" status stays after a restart at the panel.
 - [ ] **Milestone 2 — real unit**: run against a real Dantherm or Pluggit
       unit (see "To check").
 - [ ] **Milestone 3 — more**: alarm reset (register 514, the alarm number,
